@@ -1,6 +1,9 @@
 import logging
 import os
+import sys
 import time
+from contextlib import suppress
+from functools import wraps
 from http import HTTPStatus
 
 import requests
@@ -10,7 +13,7 @@ from telebot import apihelper, TeleBot
 from exceptions import StatusError
 
 
-load_dotenv()
+load_dotenv(".env", override=True)
 
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
@@ -35,7 +38,7 @@ TOKENS = ('PRACTICUM_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_TOKEN')
 # Настройка логирования
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
+handler = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter(
     '%(asctime)s [%(levelname)s] %(message)s %(name)s'
 )
@@ -43,10 +46,22 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
+def check_message(func):
+    """Проверяет, что сообщение не совпадает с предыдущим."""
+    previous_message = ''
+
+    @wraps(func)
+    def wrapper(bot, message):
+        if message != previous_message:
+            func(bot, message)
+            previous_message == message
+
+    return wrapper
+
+
 def check_tokens():
     """Проверяет доступность переменных окружения."""
-    missing_tokens = [token for token in TOKENS
-                      if globals()[token] is None or globals()[token] == '']
+    missing_tokens = [token for token in TOKENS if not globals()[token]]
 
     if missing_tokens:
         error = (
@@ -57,11 +72,13 @@ def check_tokens():
         raise ValueError(error)
 
 
+# @check_message
 def send_message(bot, message):
     """Отправляет сообщения в Telegram-чат."""
-    logger.debug('Начало работы.')
+    logger.debug('Сообщение отправляется.')
 
     bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
     logger.debug('Сообщение успешно отправлено.')
 
 
@@ -69,7 +86,7 @@ def get_api_answer(timestamp):
     """Делает запрос к эндпоинту API-сервиса."""
     payload = {'from_date': timestamp}
 
-    logger.debug(f'Запрос к {ENDPOINT} с параметрами {HEADERS}, {payload}')
+    logger.debug(f'Запрос к {ENDPOINT} с параметрами {payload}')
 
     try:
         response = requests.get(
@@ -79,12 +96,12 @@ def get_api_answer(timestamp):
         )
 
     except requests.RequestException as error:
-        error_message = f'Произошла ошибка: {error}.'
-        raise ConnectionError(error_message)
+        raise ConnectionError(f'Произошла ошибка: {error}.')
 
     if response.status_code != HTTPStatus.OK:
-        error_message = f'Запрос завершился с кодом: {response.status_code}.'
-        raise StatusError(error_message)
+        raise StatusError(
+            f'Запрос завершился с кодом: {response.status_code}.'
+        )
 
     logger.debug('Ответ успешно получен.')
 
@@ -96,29 +113,27 @@ def check_response(response):
     logger.debug('Начало проверки.')
 
     if not isinstance(response, dict):
-        error = (
-            'Тип данных не соответствует ожидаемому формату.',
-            f'Полученный: {type(response)}.',
-            'Ожидаемый: dict.'
+        raise TypeError(
+            (
+                'Тип данных не соответствует ожидаемому формату.',
+                f'Полученный: {type(response)}.',
+                'Ожидаемый: dict.'
+            )
         )
-        logger.error(error)
-        raise TypeError(error)
 
     if 'homeworks' not in response:
-        error = 'Отсутствует ключ со списком домашних работ.'
-        logger.error(error)
-        raise KeyError(error)
+        raise KeyError('Отсутствует ключ со списком домашних работ.')
 
     homeworks = response.get('homeworks')
 
     if not isinstance(homeworks, list):
-        error = (
-            'Значение ключа homeworks не соответствует ожидаемому формату.'
-            f'Полученный: {type(homeworks)}.',
-            'Ожидаемый: list.'
+        raise TypeError(
+            (
+                'Значение ключа homeworks не соответствует ожидаемому формату.'
+                f'Полученный: {type(homeworks)}.',
+                'Ожидаемый: list.'
+            )
         )
-        logger.error(error)
-        raise TypeError(error)
 
     logger.debug('Проверка завершена успешно.')
 
@@ -133,16 +148,15 @@ def parse_status(homework):
     status = homework.get('status')
     verdict = HOMEWORK_VERDICTS.get(status)
 
-    missing_keys = [key for key in (homework_name, status) if key is None]
+    missing_keys = [key for key in ('homework_name', 'status')
+                    if key not in homework]
     if missing_keys:
-        error = f'Отсутствуют ключи: {", ".join(missing_keys)}.'
-        logger.error(error)
-        raise KeyError(error)
+        raise KeyError(f'Отсутствуют ключи: {", ".join(missing_keys)}.')
 
     if verdict is None:
-        error = f'Статус отсутствует в HOMEWORKS_VERDICTS. Статус: {verdict}.'
-        logger.error(error)
-        raise ValueError(error)
+        raise ValueError(
+            f'Статус отсутствует в HOMEWORKS_VERDICTS. Статус: {status}.'
+        )
 
     logger.debug('Извлечена информация о домашней работе.')
 
@@ -156,7 +170,6 @@ def main():
     # Создаем объект класса бота
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    previous_message = ''
 
     while True:
         try:
@@ -169,21 +182,19 @@ def main():
                 continue
 
             message = parse_status(homeworks[0])
-            if message != previous_message:
-                send_message(bot, message)
-                previous_message == message
+            send_message(bot, message)
 
             timestamp = response.get('current_date', timestamp)
 
         except apihelper.ApiException or requests.exceptions.RequestException:
-            logger.error('Сбой в телеграм.')
+            logger.exception('Сбой в телеграм.')
 
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logger.exception(message)
-            if message != previous_message:
+
+            with suppress(Exception):
                 send_message(bot, message)
-                previous_message == message
 
         finally:
             time.sleep(RETRY_PERIOD)
