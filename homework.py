@@ -52,9 +52,13 @@ def check_message(func):
 
     @wraps(func)
     def wrapper(bot, message):
+        nonlocal previous_message
+
         if message != previous_message:
             func(bot, message)
             previous_message == message
+        else:
+            logger.debug('Получено повторяющееся сообщение.')
 
     return wrapper
 
@@ -72,7 +76,7 @@ def check_tokens():
         raise ValueError(error)
 
 
-# @check_message
+@check_message
 def send_message(bot, message):
     """Отправляет сообщения в Telegram-чат."""
     logger.debug('Сообщение отправляется.')
