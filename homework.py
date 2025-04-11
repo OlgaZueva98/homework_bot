@@ -56,7 +56,7 @@ def check_message(func):
 
         if message != previous_message:
             func(bot, message)
-            previous_message == message
+            previous_message = message
         else:
             logger.debug('Получено повторяющееся сообщение.')
 
